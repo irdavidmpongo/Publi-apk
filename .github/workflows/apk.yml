@@ -102,6 +102,80 @@ jobs:
       - name: Synchroniser Capacitor
         run: npx cap sync android
 
+      - name: Autorisations Android (caméra, micro, position, fichiers, notifications)
+        run: |
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          perms = [
+              'INTERNET', 'ACCESS_NETWORK_STATE', 'VIBRATE', 'WAKE_LOCK',
+              'POST_NOTIFICATIONS',
+              'CAMERA', 'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS',
+              'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO', 'READ_MEDIA_AUDIO',
+              'ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION',
+          ]
+          features = ['android.hardware.camera', 'android.hardware.camera.autofocus', 'android.hardware.microphone']
+          lines = []
+          for n in perms:
+              if 'android.permission.' + n + '"' not in s:
+                  lines.append('    <uses-permission android:name="android.permission.%s" />' % n)
+          if 'READ_EXTERNAL_STORAGE' not in s:
+              lines.append('    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />')
+          for f in features:
+              if f not in s:
+                  lines.append('    <uses-feature android:name="%s" android:required="false" />' % f)
+          s = s.replace('</manifest>', '\n'.join(lines) + '\n</manifest>')
+          open(p, 'w', encoding='utf-8').write(s)
+          print(s)
+          PY
+
+      - name: Demander les autorisations au premier lancement
+        run: |
+          DIR="android/app/src/main/java/$(echo "$APP_ID" | tr . /)"
+          mkdir -p "$DIR"
+          cat > "$DIR/MainActivity.java" <<JAVA
+          package $APP_ID;
+
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+          import android.os.Bundle;
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.content.ContextCompat;
+          import com.getcapacitor.BridgeActivity;
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  List<String> wanted = new ArrayList<>();
+                  wanted.add("android.permission.CAMERA");
+                  wanted.add("android.permission.RECORD_AUDIO");
+                  wanted.add("android.permission.ACCESS_FINE_LOCATION");
+                  wanted.add("android.permission.ACCESS_COARSE_LOCATION");
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      wanted.add("android.permission.POST_NOTIFICATIONS");
+                      wanted.add("android.permission.READ_MEDIA_IMAGES");
+                      wanted.add("android.permission.READ_MEDIA_VIDEO");
+                      wanted.add("android.permission.READ_MEDIA_AUDIO");
+                  } else {
+                      wanted.add("android.permission.READ_EXTERNAL_STORAGE");
+                  }
+                  List<String> missing = new ArrayList<>();
+                  for (String perm : wanted) {
+                      if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                          missing.add(perm);
+                      }
+                  }
+                  if (!missing.isEmpty()) {
+                      ActivityCompat.requestPermissions(this, missing.toArray(new String[0]), 1001);
+                  }
+              }
+          }
+          JAVA
+          cat "$DIR/MainActivity.java"
+
       - name: Configurer signature et version
         env:
           RUN_NUMBER: ${{ github.run_number }}
