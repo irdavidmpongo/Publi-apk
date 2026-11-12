@@ -1,0 +1,117 @@
+name: Build Jason Book APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: "Jason Book"
+  APP_ID: "com.jasonbook.app"
+  SITE_URL: "https://jason-chat-mu.vercel.app"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Vérifier l'icône
+        run: |
+          if [ ! -f assets/icon.png ]; then
+            echo "❌ assets/icon.png introuvable (PNG 1024x1024 requis)"
+            exit 1
+          fi
+
+      - name: Initialiser le projet Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npm install -D @capacitor/assets@3
+          mkdir -p www
+          cat > www/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="fr">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="0; url=${{ env.SITE_URL }}">
+            <title>Jason Book</title>
+            <style>body{margin:0;background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh}</style>
+          </head>
+          <body>Chargement de Jason Book…</body>
+          </html>
+          EOF
+          cat > capacitor.config.json <<EOF
+          {
+            "appId": "${{ env.APP_ID }}",
+            "appName": "${{ env.APP_NAME }}",
+            "webDir": "www",
+            "server": {
+              "url": "${{ env.SITE_URL }}",
+              "cleartext": false,
+              "androidScheme": "https",
+              "allowNavigation": ["jason-chat-mu.vercel.app", "*.vercel.app"]
+            },
+            "android": {
+              "backgroundColor": "#000000"
+            }
+          }
+          EOF
+
+      - name: Ajouter la plateforme Android
+        run: npx cap add android
+
+      - name: Générer les icônes Android
+        run: |
+          npx capacitor-assets generate --android \
+            --iconBackgroundColor '#000000' \
+            --iconBackgroundColorDark '#000000' \
+            --splashBackgroundColor '#000000' \
+            --splashBackgroundColorDark '#000000'
+
+      - name: Synchroniser Capacitor
+        run: npx cap sync android
+
+      - name: Build APK (debug, installable)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Renommer l'APK
+        run: |
+          mkdir -p output
+          cp android/app/build/outputs/apk/debug/app-debug.apk output/JasonBook.apk
+
+      - name: Upload APK (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: JasonBook-APK
+          path: output/JasonBook.apk
+
+      - name: Publier dans les Releases GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Jason Book v${{ github.run_number }}
+          files: output/JasonBook.apk
