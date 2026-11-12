@@ -32,12 +32,25 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Vérifier l'icône
+      - name: Vérifier l'icône et les secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           if [ ! -f assets/icon.png ]; then
             echo "❌ assets/icon.png introuvable (PNG 1024x1024 requis)"
             exit 1
           fi
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "❌ Secrets KEYSTORE_BASE64 et KEYSTORE_PASSWORD manquants."
+            echo "Lance d'abord le workflow 'Créer keystore' puis ajoute les secrets."
+            exit 1
+          fi
+
+      - name: Décoder le keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
 
       - name: Initialiser le projet Capacitor
         run: |
@@ -45,7 +58,7 @@ jobs:
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
           npm install -D @capacitor/assets@3
           mkdir -p www
-          cat > www/index.html <<'EOF'
+          cat > www/index.html <<'EOF2'
           <!DOCTYPE html>
           <html lang="fr">
           <head>
@@ -57,8 +70,8 @@ jobs:
           </head>
           <body>Chargement de Jason Book…</body>
           </html>
-          EOF
-          cat > capacitor.config.json <<EOF
+          EOF2
+          cat > capacitor.config.json <<EOF2
           {
             "appId": "${{ env.APP_ID }}",
             "appName": "${{ env.APP_NAME }}",
@@ -73,7 +86,7 @@ jobs:
               "backgroundColor": "#000000"
             }
           }
-          EOF
+          EOF2
 
       - name: Ajouter la plateforme Android
         run: npx cap add android
@@ -89,16 +102,49 @@ jobs:
       - name: Synchroniser Capacitor
         run: npx cap sync android
 
-      - name: Build APK (debug, installable)
+      - name: Configurer signature et version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          n = os.environ['RUN_NUMBER']
+          s = re.sub(r'versionCode\s+\d+', 'versionCode ' + n, s)
+          s = re.sub(r'versionName\s+"[^"]*"', 'versionName "1.0.' + n + '"', s)
+          s = re.sub(r'(buildTypes\s*\{\s*release\s*\{)',
+                     r'\1\n            signingConfig signingConfigs.release', s, count=1)
+          signing = '''    signingConfigs {
+              release {
+                  storeFile file(System.getenv("KEYSTORE_PATH"))
+                  storePassword System.getenv("KEYSTORE_PASSWORD")
+                  keyAlias System.getenv("KEY_ALIAS")
+                  keyPassword System.getenv("KEY_PASSWORD")
+              }
+          }
+          '''
+          s = s.replace('    buildTypes {', signing + '    buildTypes {', 1)
+          assert 'signingConfig signingConfigs.release' in s, 'patch signature échoué'
+          assert 'versionCode ' + n in s, 'patch version échoué'
+          open(p, 'w').write(s)
+          PY
+
+      - name: Build APK signé (release)
         working-directory: android
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: jasonbook
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Renommer l'APK
         run: |
           mkdir -p output
-          cp android/app/build/outputs/apk/debug/app-debug.apk output/JasonBook.apk
+          cp android/app/build/outputs/apk/release/app-release.apk output/JasonBook.apk
 
       - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
